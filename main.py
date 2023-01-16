@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, HTTPException, Request, File, UploadFile, Form
+from fastapi import Depends, FastAPI, HTTPException, Request, File, UploadFile, Form, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,14 +25,12 @@ templates = Jinja2Templates(directory="templates")
 # Connection to the database
 conn = sqlite3.connect('eCommerce.db')
 
-# USER LOGIN USING oAuth2
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token",)
-
+# USER LOGIN USING JSON Web Tokens
 # The best wy to do it is to store it into different file. Never commit it to production like this
 SECRET_KEY = "b94f8e6272fcef848060d16721461f19439147462768dadfaf9e132b5e7d5dca"
 ALGORITHM = "HS256"
 
-def get_user_type(token: str = Depends(oauth2_scheme)):
+def get_user_type(token):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
@@ -74,20 +72,13 @@ def authenticate_user(email: str, password: str, conn):
             return user, user_type
     return None
 
-def create_access_token(payload: dict, expires_delta: timedelta | None = None):
+def create_access_token(payload: dict | None = None):
     payload_copy = payload.copy()
-    if expires_delta:
-        expires = datetime.utcnow() + expires_delta
-    else:
-        expires = datetime.utcnow() + timedelta(minutes=15)
-    payload_copy.update({"exp": expires})
     token = jwt.encode(payload_copy, SECRET_KEY, algorithm=ALGORITHM)
     return token
 
 @app.post("/token", status_code=201)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    email = form_data.username
-    password = form_data.password
+async def login(request: Request, response: Response, email: str = Form(...), password: str = Form(...)):
     user, user_type = authenticate_user(email, password, conn)
     if not user:
         raise HTTPException(
@@ -97,10 +88,11 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         )
     access_token_expires = timedelta(hours=24)
     access_token = create_access_token(
-        payload={"sub": user[2], "name": user[1], "type": user_type}, expires_delta=access_token_expires
+        payload={"sub": user[2], "name": user[1], "type": user_type}
     )
-    return {"access_token": access_token, "token_type": "bearer"}
-
+    response = templates.TemplateResponse("homepage.html", {"request": request, "msg": "Login Successful"})
+    response.set_cookie(key="access_token", value=access_token, httponly=True)
+    return response
 
 
 # eCommerce Homepage
@@ -109,7 +101,8 @@ async def read_item(request: Request):
     return templates.TemplateResponse("homepage.html", {"request": request})
 
 @app.get("/customer-page")
-async def customer_page(payload: dict = Depends(get_user_type)):
+async def customer_page(token):
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     if payload['type'] != 'customer':
         raise HTTPException(
             status_code=403,
