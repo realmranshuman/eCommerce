@@ -10,6 +10,7 @@ import bcrypt
 import jwt
 from jwt import PyJWTError
 import sqlite3
+import os
 
 
 # App And Middlewares
@@ -100,24 +101,6 @@ async def login(request: Request, response: Response, email: str = Form(...), pa
 async def read_item(request: Request):
     return templates.TemplateResponse("homepage.html", {"request": request})
 
-@app.get("/customer-page")
-async def customer_page(token):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    if payload['type'] != 'customer':
-        raise HTTPException(
-            status_code=403,
-            detail="Access Forbidden"
-        )
-    c = conn.cursor()
-    c.execute("SELECT * FROM customers WHERE email =?", (payload['sub'],))
-    customer = c.fetchone()
-    if not customer:
-        raise HTTPException(
-            status_code=404,
-            detail="customer not found"
-        )
-    return {"customer_name": customer[1]}
-
 @app.post("/customers/signup")
 async def customer_signup(name: str, email: str, password: str):
     c = conn.cursor()
@@ -138,3 +121,60 @@ async def customer_signup(name: str, email: str, password: str):
               (name, email, hashed_password))
     conn.commit()
     return {"message": "Customer created successfully"}
+
+@app.post("/vendors/signup")
+async def vendor_signup(name: str = Form(...), email: str = Form(...), password: str = Form(...), pan_number: str = Form(...), aadhar_number: str = Form(...), pfp: UploadFile = File(...)):
+    c = conn.cursor()
+    # check if email already exists in the table
+    c.execute("SELECT email FROM vendors WHERE email =?", (email,))
+    email_exists = c.fetchone()
+    if email_exists:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already exists"
+        )
+    # generate unique salt
+    salt = bcrypt.gensalt()
+    # hash the password
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    # handle pfp upload
+    path = "static/uploads/profilepictures"
+    if not os.path.exists(path):
+        os.makedirs(path)
+    filename = pfp.filename
+    i = 1
+    while os.path.exists(f'{path}/{filename}'):
+        name, ext = os.path.splitext(filename)
+        filename = f'{name}_{i}{ext}'
+        i += 1
+    pfp_path = f'{path}/{filename}'
+    with open(pfp_path, 'wb') as f:
+        f.write(pfp.file.read())
+
+    # store the hashed password, salt, pan_number, aadhar_number, approved, created_at, and pfp_path in the vendors table
+    c.execute("INSERT INTO vendors (name, email, hashed_password, pan_number, aadhar_number, approved, created_at, pfp) VALUES (?,?,?,?,?,0,datetime('now'),?)",
+              (name, email, hashed_password, pan_number, aadhar_number, pfp_path))
+    conn.commit()
+    return {"message": "Vendor created successfully"}
+
+
+
+
+
+@app.get("/customer-page")
+async def customer_page(token):
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'customer':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM customers WHERE email =?", (payload['sub'],))
+    customer = c.fetchone()
+    if not customer:
+        raise HTTPException(
+            status_code=404,
+            detail="customer not found"
+        )
+    return {"customer_name": customer[1]}
