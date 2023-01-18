@@ -101,7 +101,30 @@ async def login(request: Request, response: Response, email: str = Form(...), pa
 async def read_item(request: Request):
     return templates.TemplateResponse("homepage.html", {"request": request})
 
-@app.post("/customers/signup")
+
+@app.post("/admin/signup")
+async def admin_signup(name: str, email: str, password: str):
+    c = conn.cursor()
+    # check if email already exists in the table
+    c.execute("SELECT email FROM admins WHERE email =?", (email,))
+    email_exists = c.fetchone()
+    if email_exists:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already exists"
+        )
+    # generate unique salt
+    salt = bcrypt.gensalt()
+    # hash the password
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    # store the hashed password and salt in the customers table
+    c.execute("INSERT INTO admins (name, email, hashed_password, approved, created_at) VALUES (?,?,?,0,datetime('now'))",
+              (name, email, hashed_password))
+    conn.commit()
+    return {"message": "Admin created successfully"}
+
+# Customer Sign Up
+@app.post("/signup/")
 async def customer_signup(name: str, email: str, password: str):
     c = conn.cursor()
     # check if email already exists in the table
@@ -122,6 +145,7 @@ async def customer_signup(name: str, email: str, password: str):
     conn.commit()
     return {"message": "Customer created successfully"}
 
+# Vendor Sign Up
 @app.post("/vendors/signup")
 async def vendor_signup(name: str = Form(...), email: str = Form(...), password: str = Form(...), pan_number: str = Form(...), aadhar_number: str = Form(...), pfp: UploadFile = File(...)):
     c = conn.cursor()
