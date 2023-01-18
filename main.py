@@ -48,30 +48,28 @@ def authenticate_user(email: str, password: str, conn):
     user_type = 'customer'
     if user:
         hashed_password = user[3]
-        # Encode the password before passing it to the bcrypt.checkpw() function
         encoded_password = bytes(password, 'utf-8')
         if bcrypt.checkpw(encoded_password, hashed_password):
             return user, user_type
-
+    # Check if the user is an admin
     c.execute("SELECT * FROM admins WHERE email =?", (email,))
     user = c.fetchone()
     user_type = 'admin'
     if user:
         hashed_password = user[3]
-        # Encode the password before passing it to the bcrypt.checkpw() function
         encoded_password = bytes(password, 'utf-8')
         if bcrypt.checkpw(encoded_password, hashed_password):
             return user, user_type
+    # Check if the customer is a vendor type
     c.execute("SELECT * FROM vendors WHERE email =?", (email,))
     user = c.fetchone()
     user_type = 'vendor'
     if user:
         hashed_password = user[3]
-        # Encode the password before passing it to the bcrypt.checkpw() function
         encoded_password = bytes(password, 'utf-8')
         if bcrypt.checkpw(encoded_password, hashed_password):
             return user, user_type
-    return None
+    return None, ""
 
 def create_access_token(payload: dict | None = None):
     payload_copy = payload.copy()
@@ -82,19 +80,26 @@ def create_access_token(payload: dict | None = None):
 async def login(request: Request, response: Response, email: str = Form(...), password: str = Form(...)):
     user, user_type = authenticate_user(email, password, conn)
     if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+       # Handle invalid user or password
+        response = templates.TemplateResponse("homepage.html", {"request": request, "msg": "Invalid username or password"})
+        return response
+
+    if user_type == 'admin':
+        access_token = create_access_token(
+        payload={"sub": user[2], "name": user[1], "type": user_type, "approved": user[4]}
         )
-    access_token_expires = timedelta(hours=24)
-    access_token = create_access_token(
+    elif user_type =='vendor':
+        access_token = create_access_token(
+        payload={"sub": user[2], "name": user[1], "type": user_type, "approved": user[7]}
+        )
+    else:
+        access_token = create_access_token(
         payload={"sub": user[2], "name": user[1], "type": user_type}
-    )
+        )
     response = templates.TemplateResponse("homepage.html", {"request": request, "msg": "Login Successful"})
     response.set_cookie(key="access_token", value=access_token, httponly=True)
     return response
-
+        
 
 # eCommerce Homepage
 @app.get("/", response_class=HTMLResponse)
@@ -181,12 +186,9 @@ async def vendor_signup(name: str = Form(...), email: str = Form(...), password:
     conn.commit()
     return {"message": "Vendor created successfully"}
 
-
-
-
-
 @app.get("/customer-page")
-async def customer_page(token):
+async def customer_page(request: Request):
+    token = request.cookies.get("access_token")
     payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     if payload['type'] != 'customer':
         raise HTTPException(
