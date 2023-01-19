@@ -88,15 +88,15 @@ async def login(request: Request, response: Response, email: str = Form(...), pa
 
     if user_type == 'admin':
         access_token = create_access_token(
-        payload={"sub": user[2], "name": user[1], "type": user_type, "approved": user[4]}
+        payload={"sub": user[2], "id": user[0], "name": user[1], "type": user_type, "approved": user[4]}
         )
     elif user_type =='vendor':
         access_token = create_access_token(
-        payload={"sub": user[2], "name": user[1], "type": user_type, "approved": user[7]}
+        payload={"sub": user[2], "id": user[0], "name": user[1], "type": user_type, "approved": user[7]}
         )
     else:
         access_token = create_access_token(
-        payload={"sub": user[2], "name": user[1], "type": user_type}
+        payload={"sub": user[2], "id": user[0], "name": user[1], "type": user_type}
         )
     response = templates.TemplateResponse("homepage.html", {"request": request, "msg": "Login Successful"})
     response.set_cookie(key="access_token", value=access_token, httponly=True)
@@ -449,3 +449,31 @@ async def delete_product(product_id: int, request: Request):
     c.execute("DELETE FROM products WHERE id =?", (product_id,))
     conn.commit()
     return {"message": "Product and associated images deleted successfully"}
+
+# The things that a customer can do
+@app.post("/add-to-cart/")
+async def add_to_cart(request: Request, product_id: int = Form(...), quantity: int = Form(...)):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'customer':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM products WHERE id =?", (product_id,))
+    product = c.fetchone()
+    if not product:
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+    c.execute("SELECT * FROM cart WHERE customer_id =? and product_id =?", (payload['id'],product_id,))
+    cart_item = c.fetchone()
+    if cart_item:
+        new_quantity = cart_item[3] + quantity
+        c.execute("UPDATE cart SET quantity = ? WHERE id =?", (new_quantity, cart_item[0]))
+    else:
+        c.execute("INSERT INTO cart (customer_id, product_id, quantity) VALUES (?,?,?)", (payload['id'], product_id, quantity))
+    conn.commit()
+    return {"product_id": product_id, "quantity": quantity, "message": "Product added to cart successfully"}
