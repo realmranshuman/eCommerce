@@ -3,6 +3,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, ValidationError
@@ -106,7 +107,8 @@ async def login(request: Request, response: Response, email: str = Form(...), pa
 async def read_item(request: Request):
     return templates.TemplateResponse("homepage.html", {"request": request})
 
-
+# Sign Up For every type of users:
+# Admin Sign Up
 @app.post("/admin/signup")
 async def admin_signup(name: str, email: str, password: str):
     c = conn.cursor()
@@ -151,7 +153,7 @@ async def customer_signup(name: str, email: str, password: str):
     return {"message": "Customer created successfully"}
 
 # Vendor Sign Up
-@app.post("/vendors/signup")
+@app.post("/vendors/signup/")
 async def vendor_signup(name: str = Form(...), email: str = Form(...), password: str = Form(...), pan_number: str = Form(...), aadhar_number: str = Form(...), pfp: UploadFile = File(...)):
     c = conn.cursor()
     # check if email already exists in the table
@@ -204,3 +206,131 @@ async def customer_page(request: Request):
             detail="customer not found"
         )
     return {"customer_name": customer[1]}
+# The things that an admin can do
+# Adding categories
+@app.get("/add-category/")
+async def addCategoryGet(request: Request):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'admin':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM categories")
+    categories = c.fetchall()
+    return templates.TemplateResponse("/admins/categories.html", {"request": request, "categories": categories})
+
+@app.post("/add-category/")
+async def addCategoryPost(request: Request, name: str, description: str):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'admin':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("INSERT INTO categories (name, description) VALUES (?,?)", (name, description))
+    conn.commit()
+    return {"category_id": c.lastrowid, "message": "Category added successfully"}
+
+# Approving or deleting vendors
+@app.get("/vendors/")
+async def view_vendors(request: Request):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'admin':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM vendors")
+    vendors = c.fetchall()
+    return {"vendors": vendors}
+
+@app.post("/vendors/{vendor_id}/approve/")
+async def approve_vendor(request: Request, vendor_id: int):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'admin':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM vendors WHERE id =?", (vendor_id,))
+    vendor = c.fetchone()
+    if not vendor:
+        raise HTTPException(
+            status_code=404,
+            detail="Vendor not found"
+        )
+    c.execute("UPDATE vendors SET approved = 1 WHERE id =?", (vendor_id,))
+    conn.commit()
+    return {"message": "Vendor approved successfully"}
+
+@app.delete("/vendors/{vendor_id}/delete/")
+async def delete_vendor(request: Request, vendor_id: int):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'admin':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM vendors WHERE id =?", (vendor_id,))
+    vendor = c.fetchone()
+    if not vendor:
+        raise HTTPException(
+            status_code=404,
+            detail="Vendor not found"
+        )
+    c.execute("DELETE FROM vendors WHERE id =?", (vendor_id,))
+    conn.commit()
+    return {"message": "Vendor deleted successfully"}
+
+# The Things A Vendor Can Do
+def generate_product_url(product_name: str, id:int, category_id:int) -> str:
+    product_name = product_name.lower()
+    product_name = product_name.replace(" ", "-")
+    url = f"{product_name}+{id}+{category_id}"
+    return url
+@app.post("/add-product/")
+async def add_product(request: Request, product_name: str = Form(...), description: str = Form(...), price: float = Form(...), stock: int = Form(...), category_id: int = Form(...), images: List[UploadFile] = File(...)):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'vendor':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM vendors WHERE email =?", (payload['sub'],))
+    vendor = c.fetchone()
+    c.execute("INSERT INTO products (product_name, description, price, stock, category_id, vendor_id) VALUES (?,?,?,?,?,?)", (product_name, description, price, stock, category_id, vendor[0]))
+    conn.commit()
+    product_id = c.lastrowid
+    url = generate_product_url(product_name, product_id, category_id)
+    c.execute("UPDATE products SET url = ? WHERE id =?", (url, product_id))
+    conn.commit()
+    for image in images:
+        # handle image upload
+        path = "static/uploads/productpictures"
+        if not os.path.exists(path):
+            os.makedirs(path)
+        filename = image.filename
+        i = 1
+        while os.path.exists(f'{path}/{filename}'):
+            name, ext = os.path.splitext(filename)
+            filename = f'{name}_{i}{ext}'
+            i += 1
+        image_path = f'{path}/{filename}'
+        with open(image_path, 'wb') as f:
+            f.write(image.file.read())
+        c.execute("INSERT INTO product_images (product_id, image_url) VALUES (?,?)", (product_id, image_path))
+        conn.commit()
+    return {"product_id": product_id, "message": "Product added successfully"}
