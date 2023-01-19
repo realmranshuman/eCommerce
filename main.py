@@ -7,6 +7,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, ValidationError
+import re
 import bcrypt
 import jwt
 from jwt import PyJWTError
@@ -295,9 +296,10 @@ async def delete_vendor(request: Request, vendor_id: int):
 
 # The Things A Vendor Can Do
 def generate_product_url(product_name: str, id:int, category_id:int) -> str:
+    product_name = re.sub(r'[^A-Za-z0-9]+', ' ', product_name)
     product_name = product_name.lower()
     product_name = product_name.replace(" ", "-")
-    url = f"{product_name}+{id}+{category_id}"
+    url = f"{product_name}-{id}-{category_id}"
     return url
 @app.post("/add-product/")
 async def add_product(request: Request, product_name: str = Form(...), description: str = Form(...), price: float = Form(...), stock: int = Form(...), category_id: int = Form(...), images: List[UploadFile] = File(...)):
