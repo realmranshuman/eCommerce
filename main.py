@@ -336,3 +336,116 @@ async def add_product(request: Request, product_name: str = Form(...), descripti
         c.execute("INSERT INTO product_images (product_id, image_url) VALUES (?,?)", (product_id, image_path))
         conn.commit()
     return {"product_id": product_id, "message": "Product added successfully"}
+
+# update product details
+@app.post("/update-product/{product_id}")
+async def update_product(request: Request, product_id: int, product_name: str = Form(...), description: str = Form(...), price: float = Form(...), stock: int = Form(...)):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'vendor':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM vendors WHERE email =?", (payload['sub'],))
+    vendor = c.fetchone()
+    c.execute("UPDATE products SET product_name = ?, description = ?, price = ?, stock = ? WHERE id = ? AND vendor_id = ?", (product_name, description, price, stock, product_id, vendor[0]))
+    conn.commit()
+    return {"product_id": product_id, "message": "Product updated successfully"}
+
+@app.post("/add-product-image/{product_id}")
+async def add_product_image(request: Request, product_id: int, image: UploadFile = File(...)):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'vendor':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM products WHERE id =?", (product_id,))
+    product = c.fetchone()
+    if product is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+    c.execute("SELECT * FROM vendors WHERE email =?", (payload['sub'],))
+    vendor = c.fetchone()
+    if product[7] != vendor[0]:
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    # handle image upload
+    path = "static/uploads/productpictures"
+    if not os.path.exists(path):
+        os.makedirs(path)
+    filename = image.filename
+    i = 1
+    while os.path.exists(f'{path}/{filename}'):
+        name, ext = os.path.splitext(filename)
+        filename = f'{name}_{i}{ext}'
+        i += 1
+    image_path = f'{path}/{filename}'
+    with open(image_path, 'wb') as f:
+        f.write(image.file.read())
+    c.execute("INSERT INTO product_images (product_id, image_url) VALUES (?,?)", (product_id, image_path))
+    conn.commit()
+    return {"product_id": product_id, "message": "Product Image added successfully"}
+
+
+    # Deletes one image from product_images
+@app.post("/delete-product-image/{image_id}")
+async def delete_product_image(image_id: int, request: Request):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'vendor':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    c.execute("SELECT * FROM product_images WHERE id =?", (image_id,))
+    image = c.fetchone()
+    if not image:
+        raise HTTPException(
+            status_code=404,
+            detail="Image not found"
+        )
+    c.execute("DELETE FROM product_images WHERE id =?", (image_id,))
+    conn.commit()
+    # Delete the image from the server
+    os.remove(image[2])
+    return {"message": "Image deleted successfully"}
+
+# Delete a product
+@app.post("/delete-product/{product_id}")
+async def delete_product(product_id: int, request: Request):
+    token = request.cookies.get("access_token")
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload['type'] != 'vendor':
+        raise HTTPException(
+            status_code=403,
+            detail="Access Forbidden"
+        )
+    c = conn.cursor()
+    # Delete associated images
+    c.execute("SELECT image_url FROM product_images WHERE product_id =?", (product_id,))
+    images = c.fetchall()
+    for image in images:
+        os.remove(image[0])
+    c.execute("DELETE FROM product_images WHERE product_id =?", (product_id,))
+    conn.commit()
+    # Delete product_images from the database
+    c.execute("SELECT * FROM products WHERE id =?", (product_id,))
+    product = c.fetchone()
+    if not product:
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+    c.execute("DELETE FROM products WHERE id =?", (product_id,))
+    conn.commit()
+    return {"message": "Product and associated images deleted successfully"}
