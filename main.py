@@ -3,10 +3,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import RedirectResponse
 from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, ValidationError
+import json
 import re
 import bcrypt
 import jwt
@@ -47,6 +49,7 @@ def authenticate_user(email: str, password: str, conn):
     c = conn.cursor()
     c.execute("SELECT * FROM customers WHERE email =?", (email,))
     user = c.fetchone()
+    conn.commit()
     user_type = 'customer'
     if user:
         hashed_password = user[3]
@@ -56,6 +59,7 @@ def authenticate_user(email: str, password: str, conn):
     # Check if the user is an admin
     c.execute("SELECT * FROM admins WHERE email =?", (email,))
     user = c.fetchone()
+    conn.commit()
     user_type = 'admin'
     if user:
         hashed_password = user[3]
@@ -65,6 +69,7 @@ def authenticate_user(email: str, password: str, conn):
     # Check if the customer is a vendor type
     c.execute("SELECT * FROM vendors WHERE email =?", (email,))
     user = c.fetchone()
+    conn.commit()
     user_type = 'vendor'
     if user:
         hashed_password = user[3]
@@ -98,8 +103,16 @@ async def login(request: Request, response: Response, email: str = Form(...), pa
         access_token = create_access_token(
         payload={"sub": user[2], "id": user[0], "name": user[1], "type": user_type}
         )
+        cart_items = request.cookies.get("cart_items")
+        if cart_items:
+            cart_items = json.loads(cart_items)
+            c = conn.cursor()
+        for item in cart_items:
+            c.execute("INSERT INTO cart (customer_id, product_id, quantity) VALUES (?,?,?)", (user[0], item['product_id'], item['quantity']))
+            conn.commit()
     response = templates.TemplateResponse("homepage.html", {"request": request, "msg": "Login Successful"})
     response.set_cookie(key="access_token", value=access_token, httponly=True)
+    response.delete_cookie("cart_items")
     return response
         
 
@@ -454,26 +467,38 @@ async def delete_product(product_id: int, request: Request):
 @app.post("/add-to-cart/")
 async def add_to_cart(request: Request, product_id: int = Form(...), quantity: int = Form(...)):
     token = request.cookies.get("access_token")
-    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    if payload['type'] != 'customer':
-        raise HTTPException(
-            status_code=403,
-            detail="Access Forbidden"
-        )
-    c = conn.cursor()
-    c.execute("SELECT * FROM products WHERE id =?", (product_id,))
-    product = c.fetchone()
-    if not product:
-        raise HTTPException(
-            status_code=404,
-            detail="Product not found"
-        )
-    c.execute("SELECT * FROM cart WHERE customer_id =? and product_id =?", (payload['id'],product_id,))
-    cart_item = c.fetchone()
-    if cart_item:
-        new_quantity = cart_item[3] + quantity
-        c.execute("UPDATE cart SET quantity = ? WHERE id =?", (new_quantity, cart_item[0]))
+    cart_items = request.cookies.get("cart_items")
+    if token:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload['type'] == 'customer':
+            c = conn.cursor()
+            c.execute("SELECT * FROM products WHERE id =?", (product_id,))
+            product = c.fetchone()
+            if not product:
+                raise HTTPException(
+                status_code=404,
+                detail="Product not found"
+            )
+            c.execute("SELECT * FROM cart WHERE customer_id =? and product_id =?", (payload['id'],product_id,))
+            cart_item = c.fetchone()
+            if cart_item:
+                new_quantity = cart_item[3] + quantity
+                c.execute("UPDATE cart SET quantity = ? WHERE id =?", (new_quantity, cart_item[0]))
+            else:
+                c.execute("INSERT INTO cart (customer_id, product_id, quantity) VALUES (?,?,?)", (payload['id'], product_id, quantity))
+            conn.commit()
+            return {"product_id": product_id, "quantity": quantity, "message": "Product added to cart successfully"}
     else:
-        c.execute("INSERT INTO cart (customer_id, product_id, quantity) VALUES (?,?,?)", (payload['id'], product_id, quantity))
-    conn.commit()
-    return {"product_id": product_id, "quantity": quantity, "message": "Product added to cart successfully"}
+        if cart_items:
+            cart_items = json.loads(cart_items)
+            for item in cart_items:
+                if item['product_id'] == product_id:
+                    item['quantity'] += quantity
+                    break
+            else:
+                cart_items.append({"product_id": product_id, "quantity": quantity})
+        else:
+            cart_items = [{"product_id": product_id, "quantity": quantity}]
+        response = RedirectResponse(url='/cart')
+        response.set_cookie(key="cart_items", value=json.dumps(cart_items), httponly=True)
+        return response
