@@ -6,9 +6,9 @@ from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse, Response
 import starlette.status as status
 from typing import List, Optional
-from datetime import datetime, timedelta
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, ValidationError
+from datetime import datetime
+from pydantic import ValidationError
+import random
 import json
 import re
 import bcrypt
@@ -557,4 +557,52 @@ async def view_cart(request: Request):
                         "image_url": product[4],
                         })
         return {"cart_items": products}
+def generate_order_number():
+    current_time = datetime.now().strftime("%s")
+    random_number = random.randint(1000000000, 9999999999)
+    order_number = int(str(current_time) + str(random_number))
+    return order_number
+@app.post("/place-order/")
+async def place_order(request: Request):
+    token = request.cookies.get("access_token")
+    if token:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload['type'] == 'customer':
+            c = conn.cursor()
+            c.execute("SELECT * FROM customer_details WHERE customer_id =? and type = 'primary'", (payload['id'],))
+            customer_details = c.fetchone()
+            if not customer_details:
+                # Redirect to /customer/add-details/ where they can update their details
+                return RedirectResponse("/customer/add-details/", status_code=status.HTTP_302_FOUND)
+            c.execute("SELECT * FROM cart WHERE customer_id =?", (payload['id'],))
+            cart_items = c.fetchall()
+            if not cart_items:
+                raise HTTPException(
+                status_code=404,
+                detail="Cart is empty"
+            )
+            # calculate the total ammount and store it into orders
+            total_amount = 0
+            for item in cart_items:
+                c.execute("SELECT price FROM products WHERE id =?", (item[2],))
+                price = c.fetchone()
+                total_amount += price[0] * item[3]
 
+            order_number = generate_order_number()
+            c.execute("INSERT INTO orders (order_number, customer_id, total_amount, order_status, created_at, address) VALUES (?,?,?,?,?,?)", (order_number, payload['id'], total_amount, 'pending', datetime.now(), address))
+            conn.commit()
+            c.execute("SELECT id FROM orders WHERE order_number =?", (order_number,))
+            order_id = c.fetchone()[0]
+
+            for item in cart_items:
+                c.execute("INSERT INTO order_items (order_id, product_id, quantity) VALUES (?,?,?)", (order_id, item[2], item[3]))
+                c.execute("UPDATE products SET stock = stock - ? WHERE id =?", (item[3], item[2]))
+            conn.commit()
+            response = RedirectResponse("/order/success/", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie("cart_items")
+            return response
+    else:
+        raise HTTPException(
+            status_code=401,
+            detail="You need to signup and login first!"
+        )
