@@ -1,9 +1,10 @@
-from fastapi import Depends, FastAPI, HTTPException, Request, File, UploadFile, Form, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, File, UploadFile, Form
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
+import starlette.status as status
 from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -499,6 +500,61 @@ async def add_to_cart(request: Request, product_id: int = Form(...), quantity: i
                 cart_items.append({"product_id": product_id, "quantity": quantity})
         else:
             cart_items = [{"product_id": product_id, "quantity": quantity}]
-        response = RedirectResponse(url='/cart')
-        response.set_cookie(key="cart_items", value=json.dumps(cart_items), httponly=True)
-        return response
+    response = RedirectResponse("/cart/", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(key="cart_items", value=json.dumps(cart_items), httponly=True)
+    return response
+
+@app.get("/cart/")
+async def view_cart(request: Request):
+    token = request.cookies.get("access_token")
+    if token:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload['type'] == 'customer':
+            c = conn.cursor()
+            c.execute("""
+                SELECT p.product_name, p.price, p.stock, c.quantity, pi.image_url
+                FROM products p
+                JOIN cart c ON c.product_id = p.id
+                JOIN product_images pi ON pi.product_id = p.id
+                WHERE c.customer_id = ? 
+                GROUP BY c.id
+                """, (payload['id'],))
+            products = c.fetchall()
+            cart_items = []
+            for item in products:
+                stock_status = "In stock" if item[2] > 0 else "Out of stock"
+                cart_items.append({
+                    "product_name": item[0],
+                    "price": item[1],
+                    "stock_status": stock_status,
+                    "quantity": item[3],
+                    "image_url": item[4],
+                })
+            return {"cart_items": cart_items}
+    else:
+        cart_items = request.cookies.get("cart_items")
+        if cart_items:
+            cart_items = json.loads(cart_items)
+            products = []
+            for item in cart_items:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT p.product_name, p.price, p.stock, c.quantity, pi.image_url
+                    FROM products p
+                    JOIN cart c ON c.product_id = p.id
+                    JOIN product_images pi ON pi.product_id = p.id
+                    WHERE c.product_id = ?
+                    LIMIT 1
+                    """, (item['product_id'],))
+                product = c.fetchone()
+                if product:
+                    stock_status = "In stock" if product[2] > 0 else "Out of stock"
+                    products.append({
+                        "product_name": product[0],
+                        "price": product[1],
+                        "stock_status": stock_status,
+                        "quantity": item['quantity'],
+                        "image_url": product[4],
+                        })
+        return {"cart_items": products}
+
