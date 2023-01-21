@@ -563,44 +563,49 @@ def generate_order_number():
     order_number = int(str(current_time) + str(random_number))
     return order_number
 @app.post("/place-order/")
-async def place_order(request: Request):
+async def place_order(request: Request, address: Optional[str] = Form(None)):
     token = request.cookies.get("access_token")
     if token:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if payload['type'] == 'customer':
             c = conn.cursor()
-            c.execute("SELECT * FROM customer_details WHERE customer_id =? and type = 'primary'", (payload['id'],))
-            customer_details = c.fetchone()
-            if not customer_details:
+            c.execute("SELECT * FROM customer_addresses WHERE customer_id =? and type = 'primary'", (payload['id'],))
+            customer_address = c.fetchone()
+            if not customer_address:
                 # Redirect to /customer/add-details/ where they can update their details
                 return RedirectResponse("/customer/add-details/", status_code=status.HTTP_302_FOUND)
-            c.execute("SELECT * FROM cart WHERE customer_id =?", (payload['id'],))
-            cart_items = c.fetchall()
-            if not cart_items:
-                raise HTTPException(
-                status_code=404,
-                detail="Cart is empty"
-            )
-            # calculate the total ammount and store it into orders
-            total_amount = 0
-            for item in cart_items:
-                c.execute("SELECT price FROM products WHERE id =?", (item[2],))
-                price = c.fetchone()
-                total_amount += price[0] * item[3]
+            elif customer_address:
+                # Redirect to /customer/select-address/ where they can select the address where they want their order delivered
+                return RedirectResponse("/customer/select-address/", status_code=status.HTTP_302_FOUND)
+                # The customer selects "proceed to buy button" sending the address to this endpoint.
+            if address:
+                c.execute("SELECT * FROM cart WHERE customer_id =?", (payload['id'],))
+                cart_items = c.fetchall()
+                if not cart_items:
+                    raise HTTPException(
+                    status_code=404,
+                    detail="Cart is empty"
+                    )
+                # calculate the total amount and store it into orders
+                total_amount = 0
+                for item in cart_items:
+                    c.execute("SELECT price FROM products WHERE id =?", (item[2],))
+                    price = c.fetchone()
+                    total_amount += price[0] * item[3]
 
-            order_number = generate_order_number()
-            c.execute("INSERT INTO orders (order_number, customer_id, total_amount, order_status, created_at, address) VALUES (?,?,?,?,?,?)", (order_number, payload['id'], total_amount, 'pending', datetime.now(), address))
-            conn.commit()
-            c.execute("SELECT id FROM orders WHERE order_number =?", (order_number,))
-            order_id = c.fetchone()[0]
+                order_number = generate_order_number()
+                c.execute("INSERT INTO orders (order_number, customer_id, total_amount, order_status, created_at, address) VALUES (?,?,?,?,?,?)", (order_number, payload['id'], total_amount, 'pending', datetime.now(), address))
+                conn.commit()
+                c.execute("SELECT id FROM orders WHERE order_number =?", (order_number,))
+                order_id = c.fetchone()[0]
 
-            for item in cart_items:
-                c.execute("INSERT INTO order_items (order_id, product_id, quantity) VALUES (?,?,?)", (order_id, item[2], item[3]))
-                c.execute("UPDATE products SET stock = stock - ? WHERE id =?", (item[3], item[2]))
-            conn.commit()
-            response = RedirectResponse("/order/success/", status_code=status.HTTP_302_FOUND)
-            response.delete_cookie("cart_items")
-            return response
+                for item in cart_items:
+                    c.execute("INSERT INTO order_items (order_id, product_id, quantity) VALUES (?,?,?)", (order_id, item[2], item[3]))
+                    c.execute("UPDATE products SET stock = stock - ? WHERE id =?", (item[3], item[2]))
+                conn.commit()
+                response = RedirectResponse("/order/success/", status_code=status.HTTP_302_FOUND)
+                response.delete_cookie("cart_items")
+                return response
     else:
         raise HTTPException(
             status_code=401,
