@@ -109,8 +109,15 @@ async def login(request: Request, response: Response, email: str = Form(...), pa
             cart_items = json.loads(cart_items)
             c = conn.cursor()
         for item in cart_items:
-            c.execute("INSERT INTO cart (customer_id, product_id, quantity) VALUES (?,?,?)", (user[0], item['product_id'], item['quantity']))
-            conn.commit()
+            c.execute("SELECT * FROM cart WHERE customer_id =? and product_id =?", (user[0], item['product_id']))
+            existing_item = c.fetchone()
+            if existing_item:
+                new_quantity = existing_item[3] + item['quantity']
+                c.execute("UPDATE cart SET quantity =? WHERE id =?", (new_quantity, existing_item[0]))
+            else:
+                c.execute("INSERT INTO cart (customer_id, product_id, quantity) VALUES (?,?,?)", (user[0], item['product_id'], item['quantity']))
+                conn.commit()
+
     response = templates.TemplateResponse("homepage.html", {"request": request, "msg": "Login Successful"})
     response.set_cookie(key="access_token", value=access_token, httponly=True)
     response.delete_cookie("cart_items")
@@ -465,6 +472,24 @@ async def delete_product(product_id: int, request: Request):
     return {"message": "Product and associated images deleted successfully"}
 
 # The things that a customer can do
+
+@app.post("/customer/add-details/")
+async def add_customer_details(request: Request, address_line_1: str = Form(...), address_line_2: Optional[str] = Form(None), city: str = Form(...), state: str = Form(...), postal_code: str = Form(...), phone: str = Form(...)):
+    token = request.cookies.get("access_token")
+    if token:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload['type'] == 'customer':
+            c = conn.cursor()
+            customer_email = payload['sub']
+            customer_id = payload['id']
+            c.execute("INSERT INTO customer_addresses (customer_id, address_line_1, address_line_2, city, state, postal_code, phone) VALUES (?,?,?,?,?,?,?)", (customer_id, address_line_1, address_line_2, city, state, postal_code, phone))
+            conn.commit()
+            return {"message": "Customer details added successfully"}
+    else:        
+        raise HTTPException(
+                status_code=404,
+                detail="You haven't logged in yet"
+            )
 @app.post("/add-to-cart/")
 async def add_to_cart(request: Request, product_id: int = Form(...), quantity: int = Form(...)):
     token = request.cookies.get("access_token")
@@ -558,12 +583,12 @@ async def view_cart(request: Request):
                         })
         return {"cart_items": products}
 def generate_order_number():
-    current_time = datetime.now().strftime("%s")
-    random_number = random.randint(1000000000, 9999999999)
-    order_number = int(str(current_time) + str(random_number))
+    current_time = datetime.now().strftime("%Y%m%d%H%M%S")
+    random_number = random.randint(10000, 99999)
+    order_number = int(current_time + str(random_number))
     return order_number
-@app.post("/place-order/")
-async def place_order(request: Request, address: Optional[str] = Form(None)):
+@app.post("/select-address-for-order/")
+async def select_order_address(request: Request):
     token = request.cookies.get("access_token")
     if token:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -573,39 +598,58 @@ async def place_order(request: Request, address: Optional[str] = Form(None)):
             customer_address = c.fetchone()
             if not customer_address:
                 # Redirect to /customer/add-details/ where they can update their details
-                return RedirectResponse("/customer/add-details/", status_code=status.HTTP_302_FOUND)
+                return RedirectResponse("/customer/add-address/", status_code=status.HTTP_302_FOUND)
             elif customer_address:
                 # Redirect to /customer/select-address/ where they can select the address where they want their order delivered
                 return RedirectResponse("/customer/select-address/", status_code=status.HTTP_302_FOUND)
-                # The customer selects "proceed to buy button" sending the address to this endpoint.
-            if address:
-                c.execute("SELECT * FROM cart WHERE customer_id =?", (payload['id'],))
-                cart_items = c.fetchall()
-                if not cart_items:
-                    raise HTTPException(
-                    status_code=404,
-                    detail="Cart is empty"
-                    )
-                # calculate the total amount and store it into orders
-                total_amount = 0
-                for item in cart_items:
-                    c.execute("SELECT price FROM products WHERE id =?", (item[2],))
-                    price = c.fetchone()
-                    total_amount += price[0] * item[3]
+                # The customer selects "proceed to buy button" sending the address to /place-order/ endpoint.
+    else:
+        raise HTTPException(
+            status_code=401,
+            detail="You need to signup and login first!"
+        )
 
-                order_number = generate_order_number()
-                c.execute("INSERT INTO orders (order_number, customer_id, total_amount, order_status, created_at, address) VALUES (?,?,?,?,?,?)", (order_number, payload['id'], total_amount, 'pending', datetime.now(), address))
-                conn.commit()
-                c.execute("SELECT id FROM orders WHERE order_number =?", (order_number,))
-                order_id = c.fetchone()[0]
+@app.post("/place-order/")
+async def place_order(request: Request, address: Optional[str] = Form(None)):
+    token = request.cookies.get("access_token")
+    if token:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # For addditional verification of address being passed here
+        # c = conn.cursor()
+        # c.execute("SELECT * FROM customer_addresses WHERE customer_id =? and type = 'primary'", (payload['id'],))
+        # customer_address = c.fetchone()
+        if address:
+            c = conn.cursor()
+            c.execute("SELECT * FROM cart WHERE customer_id =?", (payload['id'],))
+            cart_items = c.fetchall()
+            if not cart_items:
+                raise HTTPException(
+                status_code=404,
+                detail="Cart is empty"
+                )
+            # calculate the total amount and store it into orders
+            total_amount = 0
+            for item in cart_items:
+                c.execute("SELECT price FROM products WHERE id =?", (item[2],))
+                price = c.fetchone()
+                total_amount += price[0] * item[3]
 
-                for item in cart_items:
-                    c.execute("INSERT INTO order_items (order_id, product_id, quantity) VALUES (?,?,?)", (order_id, item[2], item[3]))
-                    c.execute("UPDATE products SET stock = stock - ? WHERE id =?", (item[3], item[2]))
+            order_number = generate_order_number()
+            c.execute("INSERT INTO orders (order_number, customer_id, total_amount, order_status, created_at, address) VALUES (?,?,?,?,?,?)", (order_number, payload['id'], total_amount, 'pending', datetime.now(), address))
+            conn.commit()
+            c.execute("SELECT id FROM orders WHERE order_number =?", (order_number,))
+            order_id = c.fetchone()[0]
+
+            for item in cart_items:
+                c.execute("SELECT price FROM products WHERE id =?", (item[2],))
+                price = c.fetchone()
+                c.execute("INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?,?,?,?)", (order_id, item[2], item[3], price[0]))
+                c.execute("UPDATE products SET stock = stock - ? WHERE id =?", (item[3], item[2]))
+                c.execute("DELETE FROM cart WHERE customer_id =? and product_id =?", (payload['id'], item[2]))
                 conn.commit()
-                response = RedirectResponse("/order/success/", status_code=status.HTTP_302_FOUND)
-                response.delete_cookie("cart_items")
-                return response
+            response = RedirectResponse("/order/success/", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie("cart_items")
+            return response
     else:
         raise HTTPException(
             status_code=401,
